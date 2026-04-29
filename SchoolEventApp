@@ -1,0 +1,796 @@
+import React, { useState, useEffect, useCallback } from 'react';
+import { 
+  ChevronLeft, 
+  ChevronRight, 
+  Plus, 
+  GripVertical, 
+  Upload, 
+  Search, 
+  Trash2, 
+  Settings2,
+  School,
+  FileSpreadsheet,
+  CheckCircle2,
+  Edit2,
+  Check,
+  Calendar,
+  Info,
+  X,
+  AlertCircle,
+  FileCheck
+} from 'lucide-react';
+
+// Firebase imports
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, getDocs, writeBatch } from 'firebase/firestore';
+
+// 엑셀 처리를 위한 외부 라이브러리 로드
+const loadXlsx = () => {
+  return new Promise((resolve) => {
+    if (window.XLSX) {
+      resolve(window.XLSX);
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = "https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js";
+    script.onload = () => resolve(window.XLSX);
+    document.head.appendChild(script);
+  });
+};
+
+// Firebase 초기화 (환경 변수 사용)
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'school-event-app';
+
+const App = () => {
+  // --- 상태 관리 ---
+  const [user, setUser] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [activeEventId, setActiveEventId] = useState(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(280); 
+  const [isResizing, setIsResizing] = useState(false);
+  const [draggedIndex, setDraggedIndex] = useState(null);
+  const [isLoading, setIsLoading] = useState(true);
+  
+  // 알림 메시지 상태
+  const [statusMsg, setStatusMsg] = useState({ text: '', type: '' });
+
+  // 편집 상태
+  const [editingId, setEditingId] = useState(null);
+  const [isMainEditing, setIsMainEditing] = useState(false);
+  const [tempName, setTempName] = useState('');
+  const [tempDate, setTempDate] = useState('');
+  const [tempDescription, setTempDescription] = useState('');
+
+  // 학생 검색 상태
+  const [searchParams, setSearchParams] = useState({
+    class: '1',
+    number: '1',
+    name: ''
+  });
+  const [searchResult, setSearchResult] = useState(null);
+  const [isSearching, setIsSearching] = useState(false);
+
+  const classes = Array.from({ length: 12 }, (_, i) => i + 1);
+  const numbers = Array.from({ length: 28 }, (_, i) => i + 1);
+  
+  // 안전한 접근을 위한 currentEvent 설정
+  const currentEvent = events.find(e => e.id === activeEventId) || events[0] || null;
+
+  // 1. Firebase Auth 및 초기 데이터 시딩
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth error:", error);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      if (!u) setIsLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Firestore 데이터 실시간 동기화
+  useEffect(() => {
+    if (!user) return;
+
+    const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'events');
+    
+    const unsubscribe = onSnapshot(eventsRef, (snapshot) => {
+      const fetchedEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      
+      if (fetchedEvents.length === 0) {
+        seedInitialData();
+      } else {
+        const sortedEvents = fetchedEvents.sort((a, b) => (a.order || 0) - (b.order || 0));
+        setEvents(sortedEvents);
+        
+        // 현재 선택된 이벤트가 없으면 첫 번째 이벤트 자동 선택
+        if (!activeEventId && sortedEvents.length > 0) {
+          setActiveEventId(sortedEvents[0].id);
+        }
+        setIsLoading(false);
+      }
+    }, (error) => {
+      console.error("Firestore sync error:", error);
+      setStatusMsg({ text: '데이터 동기화 중 오류가 발생했습니다.', type: 'error' });
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [user, activeEventId]);
+
+  const seedInitialData = async () => {
+    const batch = writeBatch(db);
+    const initialEvents = [
+      { 
+        id: '1', 
+        name: '꿈 틔움 진로체험활동', 
+        date: '2024-04-15', 
+        description: '학생 여러분의 꿈을 키우는 꿈 틔움 진로체험활동 신청 현황입니다.',
+        order: 1,
+        data: [] 
+      },
+      { 
+        id: '2', 
+        name: '체육대회', 
+        date: '2024-05-20', 
+        description: '반별 대항전 및 개인 종목 신청 현황입니다.',
+        order: 2,
+        data: [] 
+      }
+    ];
+
+    initialEvents.forEach(evt => {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'events', evt.id);
+      batch.set(docRef, evt);
+    });
+
+    await batch.commit();
+  };
+
+  useEffect(() => {
+    if (statusMsg.text) {
+      const timer = setTimeout(() => setStatusMsg({ text: '', type: '' }), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [statusMsg]);
+
+  const startResizing = useCallback((e) => {
+    e.preventDefault();
+    setIsResizing(true);
+  }, []);
+
+  const stopResizing = useCallback(() => setIsResizing(false), []);
+
+  const resize = useCallback((e) => {
+    if (isResizing) {
+      const newWidth = e.clientX;
+      if (newWidth > 220 && newWidth < 600) {
+        setSidebarWidth(newWidth);
+      }
+    }
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (isResizing) {
+      window.addEventListener('mousemove', resize);
+      window.addEventListener('mouseup', stopResizing);
+    } else {
+      window.removeEventListener('mousemove', resize);
+      window.removeEventListener('mouseup', stopResizing);
+    }
+    return () => {
+      window.removeEventListener('mousemove', resize);
+      window.removeEventListener('mouseup', stopResizing);
+    };
+  }, [isResizing, resize, stopResizing]);
+
+  const addEvent = async () => {
+    if (!user) return;
+    const newId = Date.now().toString();
+    const today = new Date().toISOString().split('T')[0];
+    const maxOrder = events.length > 0 ? Math.max(...events.map(e => e.order || 0)) : 0;
+    
+    const newEvent = { 
+      id: newId, 
+      name: `새 행사 ${events.length + 1}`, 
+      date: today, 
+      description: '',
+      order: maxOrder + 1,
+      data: [] 
+    };
+
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', newId), newEvent);
+      setActiveEventId(newId);
+      startEditing(newEvent, true);
+    } catch (err) {
+      setStatusMsg({ text: '행사 추가 중 오류가 발생했습니다.', type: 'error' });
+    }
+  };
+
+  const deleteEvent = async (id, e) => {
+    e.stopPropagation();
+    if (!user) return;
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', id));
+      if (activeEventId === id && events.length > 1) {
+        const remaining = events.filter(ev => ev.id !== id);
+        setActiveEventId(remaining[0].id);
+      }
+    } catch (err) {
+      setStatusMsg({ text: '행사 삭제 중 오류가 발생했습니다.', type: 'error' });
+    }
+  };
+
+  const startEditing = (event, fromMain = false) => {
+    if (!event) return;
+    setEditingId(event.id);
+    setTempName(event.name || '');
+    setTempDate(event.date || '');
+    setTempDescription(event.description || '');
+    setIsMainEditing(fromMain);
+  };
+
+  const saveEventDetails = async () => {
+    if (!user || !editingId) return;
+    if (tempName.trim()) {
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', editingId), {
+          name: tempName.trim(),
+          date: tempDate,
+          description: tempDescription.trim()
+        }, { merge: true });
+        setStatusMsg({ text: '행사 정보가 업데이트되었습니다.', type: 'success' });
+      } catch (err) {
+        setStatusMsg({ text: '저장 중 오류가 발생했습니다.', type: 'error' });
+      }
+    }
+    setEditingId(null);
+    setIsMainEditing(false);
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !user || !currentEvent) return;
+
+    const fileNameOnly = file.name.split('.').slice(0, -1).join('.');
+    if (fileNameOnly !== currentEvent.name) {
+      setStatusMsg({ 
+        text: `주의: 파일명(${fileNameOnly})과 행사명이 일치하지 않습니다.`, 
+        type: 'error' 
+      });
+    }
+
+    const XLSX = await loadXlsx();
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      try {
+        const bstr = evt.target.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws);
+        
+        if (data.length === 0) {
+          setStatusMsg({ text: '엑셀 파일에 데이터가 없습니다.', type: 'error' });
+          return;
+        }
+
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', activeEventId), {
+          data: data
+        }, { merge: true });
+        
+        setStatusMsg({ text: `${data.length}명의 명단을 저장했습니다. 이제 상시 조회가 가능합니다.`, type: 'success' });
+      } catch (err) {
+        setStatusMsg({ text: '파일 처리 또는 저장 중 오류가 발생했습니다.', type: 'error' });
+      }
+    };
+    reader.readAsBinaryString(file);
+    e.target.value = null;
+  };
+
+  const handleSearch = () => {
+    if (!searchParams.name.trim()) {
+      setStatusMsg({ text: '이름을 입력해주세요.', type: 'error' });
+      return;
+    }
+    
+    setIsSearching(true);
+    setSearchResult(null);
+
+    setTimeout(() => {
+      if (!currentEvent || !currentEvent.data || currentEvent.data.length === 0) {
+        setSearchResult({ error: "이 행사에 등록된 신청 명단 데이터가 없습니다. 관리자가 엑셀 파일을 업로드해야 합니다." });
+      } else {
+        const found = currentEvent.data.find(row => {
+          const rowClass = String(row['반'] || row['Class'] || '').trim();
+          const rowNum = String(row['번호'] || row['Number'] || '').trim();
+          const rowName = String(row['이름'] || row['Name'] || '').trim();
+          
+          return rowClass === String(searchParams.class) && 
+                 rowNum === String(searchParams.number) && 
+                 rowName === searchParams.name.trim();
+        });
+
+        if (found) {
+          setSearchResult(found);
+        } else {
+          setSearchResult({ error: "일치하는 신청 내역이 없습니다. 반, 번호, 이름을 다시 확인해주세요." });
+        }
+      }
+      setIsSearching(false);
+    }, 800);
+  };
+
+  const onDragStart = (index) => setDraggedIndex(index);
+  const onDragOver = (e) => e.preventDefault();
+  const onDrop = async (index) => {
+    if (draggedIndex === null || !user) return;
+    const newEvents = [...events];
+    const draggedItem = newEvents[draggedIndex];
+    newEvents.splice(draggedIndex, 1);
+    newEvents.splice(index, 0, draggedItem);
+    
+    setEvents(newEvents);
+    
+    const batch = writeBatch(db);
+    newEvents.forEach((evt, idx) => {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'events', evt.id);
+      batch.update(docRef, { order: idx + 1 });
+    });
+    await batch.commit();
+    setDraggedIndex(null);
+  };
+
+  if (isLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-slate-50">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
+          <p className="text-slate-500 font-bold">시스템에 연결하는 중...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`flex h-screen bg-slate-50 text-slate-900 font-sans overflow-hidden ${isResizing ? 'cursor-col-resize select-none' : ''}`}>
+      
+      {/* 상태 메시지 팝업 */}
+      {statusMsg.text && (
+        <div className={`fixed top-6 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-top-4 duration-300 ${statusMsg.type === 'error' ? 'bg-red-600 text-white' : 'bg-slate-900 text-white'}`}>
+          {statusMsg.type === 'error' ? <AlertCircle size={20} /> : <CheckCircle2 size={20} />}
+          <span className="font-bold text-sm">{statusMsg.text}</span>
+          <button onClick={() => setStatusMsg({text:'', type:''})} className="ml-2 hover:opacity-70"><X size={16}/></button>
+        </div>
+      )}
+
+      {/* 사이드바 */}
+      <aside 
+        style={{ width: isSidebarOpen ? `${sidebarWidth}px` : '64px' }}
+        className="relative bg-white border-r border-slate-200 transition-[width] duration-300 ease-in-out flex flex-col shrink-0"
+      >
+        <div className="p-4 flex items-center justify-between border-b border-slate-100 min-h-[64px] overflow-hidden">
+          {isSidebarOpen && (
+            <div className="flex items-center gap-2 font-bold text-blue-600 truncate animate-in fade-in">
+              <Settings2 size={20} />
+              <span className="whitespace-nowrap">행사 관리 시스템</span>
+            </div>
+          )}
+          <button 
+            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+            className={`p-1 hover:bg-slate-100 rounded-lg transition-colors ${isSidebarOpen ? 'ml-auto' : 'mx-auto'}`}
+          >
+            {isSidebarOpen ? <ChevronLeft size={20} /> : <ChevronRight size={20} />}
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-2 space-y-3 overflow-x-hidden">
+          {isSidebarOpen && <p className="text-xs font-semibold text-slate-400 px-2 py-2 uppercase tracking-wider whitespace-nowrap">행사 목록</p>}
+          {events.map((event, index) => (
+            <div
+              key={event.id}
+              draggable={editingId !== event.id}
+              onDragStart={() => onDragStart(index)}
+              onDragOver={onDragOver}
+              onDrop={() => onDrop(index)}
+              onClick={() => { setActiveEventId(event.id); setEditingId(null); setIsMainEditing(false); setSearchResult(null); }}
+              className={`
+                group flex flex-col gap-1 p-3 rounded-xl cursor-pointer transition-all
+                ${activeEventId === event.id ? 'bg-blue-50 border border-blue-100 shadow-sm' : 'hover:bg-slate-50 border border-transparent'}
+                ${draggedIndex === index ? 'opacity-50 scale-95' : 'opacity-100'}
+              `}
+            >
+              <div className="flex items-start gap-3">
+                {isSidebarOpen ? (
+                  <>
+                    <GripVertical size={16} className="text-slate-300 cursor-grab active:cursor-grabbing shrink-0 mt-1" />
+                    
+                    {(editingId === event.id && !isMainEditing) ? (
+                      <div className="flex-1 flex flex-col gap-2 min-w-0" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          autoFocus
+                          className="w-full bg-white border border-blue-300 rounded px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                          value={tempName}
+                          onChange={(e) => setTempName(e.target.value)}
+                        />
+                        <input
+                          type="date"
+                          className="w-full bg-white border border-blue-300 rounded px-2 py-1 text-xs outline-none focus:ring-2 focus:ring-blue-200"
+                          value={tempDate}
+                          onChange={(e) => setTempDate(e.target.value)}
+                        />
+                        <div className="flex justify-end gap-1 mt-1">
+                           <button onClick={saveEventDetails} className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold">
+                            <Check size={12} /> 저장
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex-1 truncate min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <p className={`font-bold truncate text-sm ${activeEventId === event.id ? 'text-blue-700' : 'text-slate-700'}`}>
+                              {event.name}
+                            </p>
+                            {event.data?.length > 0 && (
+                              <CheckCircle2 size={12} className="text-emerald-500 shrink-0" title="업로드 완료" />
+                            )}
+                          </div>
+                          <div className="flex items-center gap-1.5 mt-1 text-[11px] text-slate-400">
+                            <Calendar size={12} />
+                            <span>{event.date || '날짜 미지정'}</span>
+                          </div>
+                        </div>
+                        <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                          <button 
+                            onClick={(e) => { e.stopPropagation(); startEditing(event); }}
+                            className="p-1.5 hover:bg-blue-100 hover:text-blue-600 rounded-lg transition-all"
+                          >
+                            <Edit2 size={14} />
+                          </button>
+                          <button 
+                            onClick={(e) => deleteEvent(event.id, e)}
+                            className="p-1.5 hover:bg-red-50 hover:text-red-500 rounded-lg transition-all"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <div className="w-full flex justify-center py-1">
+                    <div className={`w-2.5 h-2.5 rounded-full ${activeEventId === event.id ? 'bg-blue-500 shadow-sm shadow-blue-300' : 'bg-slate-300'}`} />
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="p-4 border-t border-slate-100 overflow-hidden">
+          <button 
+            onClick={addEvent}
+            className={`
+              flex items-center justify-center gap-2 w-full py-2.5 rounded-xl transition-all
+              ${isSidebarOpen ? 'bg-slate-900 text-white hover:bg-slate-800 px-4 shadow-lg shadow-slate-200' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}
+            `}
+          >
+            <Plus size={20} />
+            {isSidebarOpen && <span className="font-bold whitespace-nowrap">새 행사 추가</span>}
+          </button>
+        </div>
+
+        {isSidebarOpen && (
+          <div 
+            onMouseDown={startResizing}
+            className={`absolute top-0 right-0 w-1.5 h-full cursor-col-resize transition-colors z-10 ${isResizing ? 'bg-blue-500' : 'hover:bg-blue-200'}`}
+          />
+        )}
+      </aside>
+
+      {/* 메인 컨텐츠 */}
+      <main className="flex-1 overflow-y-auto relative">
+        <div className="max-w-4xl mx-auto p-6 md:p-10">
+          
+          {/* 헤더 섹션 */}
+          <div className="mb-10 text-center md:text-left flex flex-col md:flex-row md:items-start justify-between gap-6">
+            <div className="flex-1 w-full">
+              <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-bold mb-3 uppercase tracking-widest">
+                School Event Portal
+              </div>
+              
+              {(editingId === currentEvent?.id && isMainEditing) ? (
+                <div className="space-y-4 bg-white p-6 rounded-3xl border-2 border-blue-200 shadow-xl animate-in zoom-in-95 duration-200">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-black text-blue-600 flex items-center gap-2">
+                      <Edit2 size={18} /> 행사 정보 수정
+                    </h3>
+                    <button onClick={() => setIsMainEditing(false)} className="p-1 hover:bg-slate-100 rounded">
+                      <X size={20} />
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-400">행사 이름 (파일명과 일치 권장)</label>
+                      <input
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                        value={tempName}
+                        onChange={(e) => setTempName(e.target.value)}
+                        placeholder="예: 체육대회"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs font-bold text-slate-400">행사 날짜</label>
+                      <input
+                        type="date"
+                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                        value={tempDate}
+                        onChange={(e) => setTempDate(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-slate-400">상세 안내 정보</label>
+                    <textarea
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-blue-500 min-h-[100px] resize-none"
+                      value={tempDescription}
+                      onChange={(e) => setTempDescription(e.target.value)}
+                      placeholder="공지사항이나 상세 내용을 입력하세요."
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button onClick={() => setIsMainEditing(false)} className="px-6 py-2 rounded-xl text-sm font-bold text-slate-500 hover:bg-slate-100 transition-colors">취소</button>
+                    <button onClick={saveEventDetails} className="px-8 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all">변경 내용 저장</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-4 mb-2 group">
+                    <h1 className="text-3xl md:text-4xl font-black text-slate-900 leading-tight">
+                      {currentEvent ? currentEvent.name : "행사를 로드 중입니다..."}
+                    </h1>
+                    <div className="flex items-center gap-2">
+                      {currentEvent?.date && (
+                        <span className="text-lg font-bold text-blue-500/70 whitespace-nowrap bg-blue-50 px-2 py-0.5 rounded-lg border border-blue-100">
+                          {currentEvent.date}
+                        </span>
+                      )}
+                      {currentEvent && (
+                        <button 
+                          onClick={() => startEditing(currentEvent, true)}
+                          className="p-2 text-slate-300 hover:text-blue-500 hover:bg-blue-50 rounded-full transition-all"
+                          title="정보 수정"
+                        >
+                          <Edit2 size={18} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  
+                  {currentEvent && (
+                    <div 
+                      onClick={() => startEditing(currentEvent, true)}
+                      className="flex items-start gap-3 text-slate-500 bg-white/50 border border-slate-200 p-4 rounded-2xl max-w-2xl mt-4 cursor-pointer hover:border-blue-300 hover:bg-white transition-all group shadow-sm"
+                    >
+                      <div className="bg-blue-50 p-2 rounded-lg text-blue-500 shrink-0">
+                        <Info size={18} />
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-[11px] font-black text-blue-400 uppercase tracking-tighter">상세 안내 정보</span>
+                          <span className="text-[10px] text-slate-300 opacity-0 group-hover:opacity-100">클릭하여 수정</span>
+                        </div>
+                        <p className={`text-sm leading-relaxed whitespace-pre-wrap ${!currentEvent?.description && 'text-slate-300 italic'}`}>
+                          {currentEvent?.description || '아직 등록된 안내 정보가 없습니다. 관리자 수정을 통해 내용을 입력하세요.'}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            
+            {/* 관리자 업로드 영역 */}
+            {!isMainEditing && currentEvent && (
+              <div className="bg-white p-5 rounded-3xl shadow-xl shadow-slate-100 border border-slate-200 flex flex-col items-center gap-3 shrink-0 relative overflow-hidden group">
+                {currentEvent?.data?.length > 0 && (
+                  <div className="absolute -top-1 -right-1 bg-emerald-500 text-white p-1.5 rounded-bl-2xl shadow-lg animate-in slide-in-from-top slide-in-from-right duration-500">
+                    <Check size={16} strokeWidth={4} />
+                  </div>
+                )}
+                
+                <div className={`p-3 rounded-2xl transition-colors duration-500 ${currentEvent?.data?.length > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
+                  {currentEvent?.data?.length > 0 ? <FileCheck size={32} /> : <FileSpreadsheet size={32} />}
+                </div>
+                
+                <div className="text-center">
+                  <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-1">DATA STATUS</p>
+                  <label className={`text-sm font-bold px-5 py-2 rounded-xl cursor-pointer transition-all flex items-center gap-2 shadow-lg ${currentEvent?.data?.length > 0 ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-emerald-100' : 'bg-blue-600 hover:bg-blue-700 text-white shadow-blue-100'}`}>
+                    <Upload size={16} />
+                    <span>{currentEvent?.data?.length > 0 ? '파일 다시 업로드' : '엑셀 업로드'}</span>
+                    <input type="file" className="hidden" accept=".xlsx, .xls, .csv" onChange={handleFileUpload} />
+                  </label>
+                  <div className="mt-2">
+                    {currentEvent?.data?.length > 0 ? (
+                      <div className="flex items-center justify-center gap-1 text-emerald-600 animate-in fade-in zoom-in duration-300">
+                        <CheckCircle2 size={12} />
+                        <span className="text-[10px] font-black">{currentEvent.data.length}명의 데이터 보존됨</span>
+                      </div>
+                    ) : (
+                      <p className="text-[10px] text-slate-400">*{currentEvent.name}.xlsx 파일 권장</p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 검색 영역 */}
+          <div className="bg-white rounded-[40px] shadow-2xl shadow-slate-200 border border-slate-100 p-10 mb-8 relative z-20">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-8 items-end">
+              <div className="space-y-3">
+                <label className="text-xs font-black text-slate-400 uppercase ml-1 tracking-widest">학급</label>
+                <select 
+                  className="w-full bg-slate-50 border-0 ring-1 ring-slate-200 rounded-2xl px-5 py-4 font-bold focus:ring-4 focus:ring-blue-100 transition-all outline-none appearance-none cursor-pointer"
+                  value={searchParams.class}
+                  onChange={(e) => setSearchParams({...searchParams, class: e.target.value})}
+                >
+                  {classes.map(c => <option key={c} value={c}>{c}반</option>)}
+                </select>
+              </div>
+              <div className="space-y-3">
+                <label className="text-xs font-black text-slate-400 uppercase ml-1 tracking-widest">번호</label>
+                <select 
+                  className="w-full bg-slate-50 border-0 ring-1 ring-slate-200 rounded-2xl px-5 py-4 font-bold focus:ring-4 focus:ring-blue-100 transition-all outline-none appearance-none cursor-pointer"
+                  value={searchParams.number}
+                  onChange={(e) => setSearchParams({...searchParams, number: e.target.value})}
+                >
+                  {numbers.map(n => <option key={n} value={n}>{n}번</option>)}
+                </select>
+              </div>
+              <div className="space-y-3">
+                <label className="text-xs font-black text-slate-400 uppercase ml-1 tracking-widest">이름</label>
+                <input 
+                  type="text" 
+                  placeholder="성함을 입력하세요"
+                  className="w-full bg-slate-50 border-0 ring-1 ring-slate-200 rounded-2xl px-5 py-4 font-bold focus:ring-4 focus:ring-blue-100 transition-all outline-none placeholder:text-slate-300"
+                  value={searchParams.name}
+                  onChange={(e) => setSearchParams({...searchParams, name: e.target.value})}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                />
+              </div>
+              <div>
+                <button 
+                  onClick={handleSearch}
+                  disabled={isSearching}
+                  className="w-full h-[60px] bg-blue-600 hover:bg-blue-700 text-white font-black py-4 px-6 rounded-2xl flex items-center justify-center gap-2 shadow-2xl shadow-blue-200 transition-all disabled:bg-slate-300 disabled:shadow-none active:scale-95 group"
+                >
+                  {isSearching ? (
+                    <div className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
+                    <>
+                      <Search size={22} className="group-hover:scale-110 transition-transform" />
+                      <span className="text-lg">조회하기</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 결과 표시 */}
+          {searchResult && (
+            <div className={`
+              animate-in fade-in slide-in-from-bottom-6 duration-700
+              rounded-[40px] p-10 border-2 shadow-2xl
+              ${searchResult.error ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100 shadow-emerald-100/50'}
+            `}>
+              {searchResult.error ? (
+                <div className="text-center py-6">
+                  <div className="bg-red-100 text-red-500 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <AlertCircle size={32} />
+                  </div>
+                  <h3 className="text-xl font-black text-red-900 mb-2">일치하는 정보가 없습니다</h3>
+                  <p className="text-red-700/80 leading-relaxed max-w-sm mx-auto">{searchResult.error}</p>
+                </div>
+              ) : (
+                <div className="flex flex-col md:flex-row gap-10 items-start">
+                  <div className="bg-emerald-600 text-white p-8 rounded-3xl shrink-0 shadow-xl shadow-emerald-200 animate-bounce-short">
+                    <CheckCircle2 size={64} />
+                  </div>
+                  <div className="flex-1 w-full">
+                    <div className="text-center md:text-left mb-8">
+                      <div className="flex items-center gap-2 mb-2 justify-center md:justify-start">
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                        <p className="text-emerald-700 font-black uppercase tracking-[0.2em] text-xs">Application Confirmed</p>
+                      </div>
+                      <h2 className="text-3xl md:text-4xl font-black text-slate-900 leading-tight">
+                        {searchParams.class}반 {searchParams.number}번 <span className="text-emerald-600">{searchParams.name}</span> 학생
+                      </h2>
+                      {currentEvent?.description && (
+                        <p className="text-slate-500 text-sm mt-4 italic border-l-4 border-emerald-200 pl-4 py-1 leading-relaxed">
+                          "{currentEvent.description}"
+                        </p>
+                      )}
+                    </div>
+                    
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                      {Object.entries(searchResult).map(([key, value]) => {
+                        if (['반', '번호', '이름', 'Grade', 'Class', 'Number', 'Name'].includes(key)) return null;
+                        return (
+                          <div key={key} className="bg-white p-6 rounded-3xl border-2 border-emerald-100 shadow-sm hover:shadow-xl hover:border-emerald-200 transition-all">
+                            <div className="flex items-center gap-2 mb-2">
+                               <div className="w-2 h-2 rounded-full bg-emerald-300"></div>
+                               <p className="text-[11px] font-black text-emerald-500 uppercase tracking-widest">{key}</p>
+                            </div>
+                            <p className="text-2xl font-black text-slate-800 break-words">{String(value)}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 초기 안내 */}
+          {!searchResult && !isSearching && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div className="bg-white p-10 rounded-[32px] border border-slate-100 shadow-sm text-center group hover:shadow-xl hover:translate-y-[-4px] transition-all duration-300">
+                <div className="w-16 h-16 bg-blue-50 text-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
+                  <School size={32} />
+                </div>
+                <h4 className="font-black text-slate-800 text-lg">정보 입력</h4>
+                <p className="text-sm text-slate-400 mt-3 leading-relaxed">본인의 정확한 학급 정보와 성함을 입력하세요.</p>
+              </div>
+              <div className="bg-white p-10 rounded-[32px] border border-slate-100 shadow-sm text-center group hover:shadow-xl hover:translate-y-[-4px] transition-all duration-300">
+                <div className="w-16 h-16 bg-emerald-50 text-emerald-500 rounded-2xl flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
+                  <Search size={32} />
+                </div>
+                <h4 className="font-black text-slate-800 text-lg">상시 조회 가능</h4>
+                <p className="text-sm text-slate-400 mt-3 leading-relaxed">클라우드에 저장되어 새로고침 후에도 언제든 조회 가능합니다.</p>
+              </div>
+              <div className="bg-white p-10 rounded-[32px] border border-slate-100 shadow-sm text-center group hover:shadow-xl hover:translate-y-[-4px] transition-all duration-300">
+                <div className="w-16 h-16 bg-purple-50 text-purple-500 rounded-2xl flex items-center justify-center mx-auto mb-6 group-hover:scale-110 transition-transform">
+                  <CheckCircle2 size={32} />
+                </div>
+                <h4 className="font-black text-slate-800 text-lg">결과 확인</h4>
+                <p className="text-sm text-slate-400 mt-3 leading-relaxed">자신이 신청한 프로그램 상세 내역을 한눈에 확인하세요.</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      <style>{`
+        @keyframes bounce-short {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-10px); }
+        }
+        .animate-bounce-short {
+          animation: bounce-short 2s ease-in-out infinite;
+        }
+      `}</style>
+    </div>
+  );
+};
+
+export default App;
