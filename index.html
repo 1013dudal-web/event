@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>학교 행사 신청 확인 시스템</title>
-    <!-- 외부 라이브러리 로드 -->
+    <!-- 라이브러리 로드 -->
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -14,13 +14,17 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@100;300;400;500;700;900&display=swap');
         body { font-family: 'Noto Sans KR', sans-serif; margin: 0; padding: 0; background-color: #f8fafc; }
-        .cursor-col-resize { cursor: col-resize; }
         .lucide { display: inline-block; vertical-align: middle; }
         @keyframes bounce-short {
             0%, 100% { transform: translateY(0); }
-            50% { transform: translateY(-8px); }
+            50% { transform: translateY(-5px); }
         }
         .animate-bounce-short { animation: bounce-short 2s ease-in-out infinite; }
+        /* 스크롤바 디자인 */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
     </style>
 </head>
 <body>
@@ -31,7 +35,7 @@
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebase 설정값 적용
+        // Firebase 설정 (사용자 제공 값)
         const firebaseConfig = {
             apiKey: "AIzaSyAzmoqn4B9o5Nk1NSiwZI6lSt2CO4l7XK8",
             authDomain: "school-event-3bd3a.firebaseapp.com",
@@ -46,16 +50,16 @@
         const db = getFirestore(app);
         const appId = 'school-event-check-system'; 
 
-        // Lucide 아이콘 브릿지 컴포넌트 (DOM 충돌 방지)
+        // Lucide 아이콘 컴포넌트 (DOM 충돌 방지)
         const Icon = ({ name, size = 20, className = "" }) => {
-            const containerRef = React.useRef(null);
+            const spanRef = React.useRef(null);
             React.useEffect(() => {
-                if (window.lucide && containerRef.current) {
-                    containerRef.current.innerHTML = `<i data-lucide="${name}" class="${className}" style="width: ${size}px; height: ${size}px;"></i>`;
-                    window.lucide.createIcons({ root: containerRef.current });
+                if (window.lucide && spanRef.current) {
+                    spanRef.current.innerHTML = `<i data-lucide="${name}" class="${className}" style="width: ${size}px; height: ${size}px;"></i>`;
+                    window.lucide.createIcons({ root: spanRef.current });
                 }
             }, [name, size, className]);
-            return <span ref={containerRef} className="inline-flex items-center justify-center shrink-0" style={{ width: size, height: size }}></span>;
+            return <span ref={spanRef} className="inline-flex items-center justify-center shrink-0"></span>;
         };
 
         const App = () => {
@@ -63,42 +67,39 @@
             const [events, setEvents] = React.useState([]);
             const [activeEventId, setActiveEventId] = React.useState(null);
             const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
-            const [sidebarWidth, setSidebarWidth] = React.useState(280); 
-            const [isResizing, setIsResizing] = React.useState(false);
             const [isLoading, setIsLoading] = React.useState(true);
             const [statusMsg, setStatusMsg] = React.useState({ text: '', type: '' });
             const [authError, setAuthError] = React.useState(null);
             
-            const [editingId, setEditingId] = React.useState(null);
-            const [isMainEditing, setIsMainEditing] = React.useState(false);
-            const [tempName, setTempName] = React.useState('');
-            const [tempDate, setTempDate] = React.useState('');
-            const [tempDescription, setTempDescription] = React.useState('');
+            // 검색 및 편집 상태
             const [searchParams, setSearchParams] = React.useState({ class: '1', number: '1', name: '' });
             const [searchResult, setSearchResult] = React.useState(null);
             const [isSearching, setIsSearching] = React.useState(false);
+            const [editingId, setEditingId] = React.useState(null);
+            const [tempInfo, setTempInfo] = React.useState({ name: '', date: '', desc: '' });
 
             const classes = Array.from({ length: 12 }, (_, i) => i + 1);
             const numbers = Array.from({ length: 40 }, (_, i) => i + 1);
-            const currentEvent = events.find(e => e.id === activeEventId) || events[0] || null;
+            
+            // 현재 선택된 이벤트 계산
+            const currentEvent = events.find(e => e.id === activeEventId) || null;
 
-            // 1. Firebase 인증 및 에러 처리 개선
+            // 1. 인증 초기화
             React.useEffect(() => {
-                const initSignIn = async () => {
+                const initAuth = async () => {
                     try {
                         await signInAnonymously(auth);
                     } catch (e) {
-                        console.error("인증 에러:", e);
+                        console.error("인증 실패:", e);
                         if (e.code === 'auth/configuration-not-found') {
-                            setAuthError("Firebase 콘솔에서 '익명 로그인'을 활성화해야 합니다.");
+                            setAuthError("Firebase 익명 로그인이 비활성화되어 있습니다.");
                         } else {
-                            setAuthError("인증 시스템에 연결할 수 없습니다.");
+                            setAuthError("인증 서버에 연결할 수 없습니다.");
                         }
                         setIsLoading(false);
                     }
                 };
-                initSignIn();
-
+                initAuth();
                 const unsubscribe = onAuthStateChanged(auth, (u) => {
                     if (u) {
                         setUser(u);
@@ -111,30 +112,134 @@
             // 2. 데이터 실시간 수신
             React.useEffect(() => {
                 if (!user) return;
-                // 규칙에 따른 경로 사용
                 const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'events');
                 const unsubscribe = onSnapshot(eventsRef, (snapshot) => {
-                    const fetchedEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                    if (fetchedEvents.length === 0) {
-                        seedInitialData();
-                    } else {
-                        const sortedEvents = fetchedEvents.sort((a, b) => (a.order || 0) - (b.order || 0));
-                        setEvents(sortedEvents);
-                        if (!activeEventId && sortedEvents.length > 0) setActiveEventId(sortedEvents[0].id);
-                        setIsLoading(false);
+                    const fetched = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    const sorted = fetched.sort((a, b) => (a.order || 0) - (b.order || 0));
+                    setEvents(sorted);
+                    
+                    if (sorted.length > 0 && !activeEventId) {
+                        setActiveEventId(sorted[0].id);
                     }
-                }, (error) => {
-                    console.error("데이터 수신 오류:", error);
+                    setIsLoading(false);
+                }, (err) => {
+                    console.error("수신 에러:", err);
                     setIsLoading(false);
                 });
                 return () => unsubscribe();
-            }, [user, activeEventId]);
+            }, [user]);
+
+            // 알림 메시지 자동 삭제
+            React.useEffect(() => {
+                if (statusMsg.text) {
+                    const t = setTimeout(() => setStatusMsg({ text: '', type: '' }), 3000);
+                    return () => clearTimeout(t);
+                }
+            }, [statusMsg]);
+
+            const addEvent = async () => {
+                const newId = Date.now().toString();
+                const newEvent = {
+                    id: newId,
+                    name: "새로운 행사",
+                    date: new Date().toISOString().split('T')[0],
+                    description: "행사에 대한 설명을 입력하세요.",
+                    order: events.length + 1,
+                    data: []
+                };
+                try {
+                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', newId), newEvent);
+                    setActiveEventId(newId);
+                    setStatusMsg({ text: "새 행사가 추가되었습니다.", type: "success" });
+                } catch (e) {
+                    setStatusMsg({ text: "추가 실패. Firestore 보안 규칙을 확인하세요.", type: "error" });
+                }
+            };
+
+            const deleteEvent = async (id, e) => {
+                e.stopPropagation();
+                if (!confirm("이 행사를 삭제하시겠습니까? 모든 명단 데이터가 삭제됩니다.")) return;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', id));
+                    if (activeEventId === id) setActiveEventId(null);
+                    setStatusMsg({ text: "삭제 완료", type: "success" });
+                } catch (e) {
+                    setStatusMsg({ text: "삭제 실패", type: "error" });
+                }
+            };
+
+            const handleFileUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file || !activeEventId) return;
+                
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                    try {
+                        const workbook = XLSX.read(evt.target.result, { type: 'binary' });
+                        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                        const data = XLSX.utils.sheet_to_json(sheet);
+                        
+                        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', activeEventId), {
+                            data: data
+                        }, { merge: true });
+                        
+                        setStatusMsg({ text: `${data.length}명의 데이터가 업로드되었습니다.`, type: "success" });
+                    } catch (err) {
+                        setStatusMsg({ text: "엑셀 처리 중 오류 발생", type: "error" });
+                    }
+                };
+                reader.readAsBinaryString(file);
+                e.target.value = null;
+            };
+
+            const startEdit = (event) => {
+                setEditingId(event.id);
+                setTempInfo({ name: event.name, date: event.date, desc: event.description });
+            };
+
+            const saveEdit = async () => {
+                try {
+                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', editingId), {
+                        name: tempInfo.name,
+                        date: tempInfo.date,
+                        description: tempInfo.desc
+                    }, { merge: true });
+                    setEditingId(null);
+                    setStatusMsg({ text: "수정 완료", type: "success" });
+                } catch (e) {
+                    setStatusMsg({ text: "저장 실패", type: "error" });
+                }
+            };
+
+            const handleSearch = () => {
+                if (!searchParams.name.trim()) {
+                    setStatusMsg({ text: "이름을 입력해주세요.", type: "error" });
+                    return;
+                }
+                if (!currentEvent || !currentEvent.data || currentEvent.data.length === 0) {
+                    setSearchResult({ error: "이 행사에 등록된 명단 데이터가 없습니다. 관리자가 엑셀을 업로드해야 합니다." });
+                    return;
+                }
+
+                setIsSearching(true);
+                setSearchResult(null);
+                
+                setTimeout(() => {
+                    const found = currentEvent.data.find(row => 
+                        String(row['반'] || row['Class'] || '').trim() === String(searchParams.class) && 
+                        String(row['번호'] || row['Number'] || '').trim() === String(searchParams.number) && 
+                        String(row['이름'] || row['Name'] || '').trim().replace(/\s/g, "") === searchParams.name.trim().replace(/\s/g, "")
+                    );
+                    setSearchResult(found || { error: "신청 정보를 찾을 수 없습니다. 반, 번호, 이름을 다시 확인하세요." });
+                    setIsSearching(false);
+                }, 600);
+            };
 
             const seedInitialData = async () => {
                 const batch = writeBatch(db);
                 const initialEvents = [
-                    { id: '1', name: '꿈 틔움 진로체험활동', date: '2024-04-15', description: '진로체험활동 신청 현황 조회 서비스입니다.', order: 1, data: [] },
-                    { id: '2', name: '체육대회', date: '2024-05-20', description: '체육대회 신청 현황을 확인하세요.', order: 2, data: [] }
+                    { id: '1', name: '꿈 틔움 진로체험활동', date: '2024-04-15', description: '신청 현황 확인을 위한 안내 페이지입니다.', order: 1, data: [] },
+                    { id: '2', name: '체육대회', date: '2024-05-20', description: '체육대회 종목을 확인하세요.', order: 2, data: [] }
                 ];
                 initialEvents.forEach(evt => {
                     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'events', evt.id);
@@ -143,105 +248,203 @@
                 await batch.commit();
             };
 
-            const handleResize = (e) => {
-                if (isResizing) {
-                    const newWidth = e.clientX;
-                    if (newWidth > 220 && newWidth < 600) setSidebarWidth(newWidth);
-                }
-            };
-
-            React.useEffect(() => {
-                if (isResizing) {
-                    window.addEventListener('mousemove', handleResize);
-                    window.addEventListener('mouseup', () => setIsResizing(false));
-                }
-                return () => {
-                    window.removeEventListener('mousemove', handleResize);
-                    window.removeEventListener('mouseup', () => setIsResizing(false));
-                };
-            }, [isResizing]);
-
-            const addEvent = async () => {
-                const newId = Date.now().toString();
-                const today = new Date().toISOString().split('T')[0];
-                const maxOrder = events.length > 0 ? Math.max(...events.map(e => e.order || 0)) : 0;
-                const newEvent = { id: newId, name: `새로운 행사`, date: today, description: '', order: maxOrder + 1, data: [] };
-                await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', newId), newEvent);
-                setActiveEventId(newId);
-                startEditing(newEvent, true);
-            };
-
-            const deleteEvent = async (id, e) => {
-                e.stopPropagation();
-                if(confirm("이 행사를 삭제하시겠습니까? 데이터가 모두 사라집니다.")) {
-                    await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', id));
-                }
-            };
-
-            const startEditing = (event, fromMain = false) => {
-                if (!event) return;
-                setEditingId(event.id);
-                setTempName(event.name || '');
-                setTempDate(event.date || '');
-                setTempDescription(event.description || '');
-                setIsMainEditing(fromMain);
-            };
-
-            const saveEventDetails = async () => {
-                if (tempName.trim()) {
-                    await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', editingId), {
-                        name: tempName.trim(), date: tempDate, description: tempDescription.trim()
-                    }, { merge: true });
-                    setStatusMsg({ text: '저장 완료', type: 'success' });
-                }
-                setEditingId(null);
-                setIsMainEditing(false);
-            };
-
-            const handleFileUpload = async (e) => {
-                const file = e.target.files[0];
-                if (!file || !currentEvent) return;
-                const reader = new FileReader();
-                reader.onload = async (evt) => {
-                    try {
-                        const workbook = XLSX.read(evt.target.result, { type: 'binary' });
-                        const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
-                        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'events', activeEventId), { data }, { merge: true });
-                        setStatusMsg({ text: '업로드 성공!', type: 'success' });
-                    } catch(err) {
-                        setStatusMsg({ text: '파일 처리 오류', type: 'error' });
-                    }
-                };
-                reader.readAsBinaryString(file);
-                e.target.value = null;
-            };
-
-            const handleSearch = () => {
-                if (!searchParams.name.trim()) return;
-                setIsSearching(true);
-                setSearchResult(null);
-                setTimeout(() => {
-                    if (!currentEvent?.data || currentEvent.data.length === 0) {
-                        setSearchResult({ error: "데이터가 없습니다. 관리자 메뉴에서 엑셀을 업로드하세요." });
-                    } else {
-                        const found = currentEvent.data.find(row => 
-                            String(row['반'] || row['Class'] || '').trim() === String(searchParams.class) && 
-                            String(row['번호'] || row['Number'] || '').trim() === String(searchParams.number) && 
-                            String(row['이름'] || row['Name'] || '').trim().replace(/\s/g, "") === searchParams.name.trim().replace(/\s/g, "")
-                        );
-                        setSearchResult(found || { error: "신청 정보를 찾을 수 없습니다." });
-                    }
-                    setIsSearching(false);
-                }, 800);
-            };
-
+            // 인증 에러 시 안내 화면
             if (authError) return (
-                <div className="h-screen flex flex-col items-center justify-center bg-red-50 p-10 text-center">
-                    <Icon name="alert-circle" size={64} className="text-red-500 mb-6" />
-                    <h1 className="text-2xl font-black text-red-900 mb-4">인증 구성 오류</h1>
-                    <p className="text-red-700 font-bold mb-6">{authError}</p>
-                    <div className="bg-white p-6 rounded-2xl shadow-sm border text-left max-w-md">
-                        <p className="text-sm font-bold mb-2">해결 방법:</p>
-                        <ol className="text-xs text-slate-600 space-y-2 list-decimal ml-4">
-                            <li>Firebase 콘솔 접속</li>
-                            <li><strong>Authentication > Sign-in method</strong>
+                <div className="h-screen flex flex-col items-center justify-center bg-red-50 p-6 text-center">
+                    <Icon name="alert-triangle" size={64} className="text-red-500 mb-6" />
+                    <h1 className="text-2xl font-black text-red-900 mb-4">서비스 설정 필요</h1>
+                    <p className="text-red-700 font-bold mb-8">{authError}</p>
+                    <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 text-left max-w-lg">
+                        <p className="text-lg font-black text-slate-800 mb-4">관리자 해결 방법:</p>
+                        <ol className="text-sm text-slate-600 space-y-3 list-decimal ml-5 font-medium leading-relaxed">
+                            <li><strong>Firebase 콘솔</strong> 접속</li>
+                            <li><strong>Build > Authentication</strong> 메뉴 클릭</li>
+                            <li><strong>Sign-in method</strong> 탭으로 이동</li>
+                            <li><strong>익명(Anonymous)</strong> 로그인 활성화</li>
+                            <li>설정 후 이 페이지를 <strong>새로고침</strong> 하세요.</li>
+                        </ol>
+                    </div>
+                </div>
+            );
+
+            if (isLoading) return (
+                <div className="h-screen flex flex-col items-center justify-center bg-slate-50">
+                    <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+                    <p className="font-bold text-slate-400">데이터를 불러오는 중...</p>
+                </div>
+            );
+
+            return (
+                <div className="flex h-screen bg-slate-50 overflow-hidden">
+                    {/* 상단 알림 */}
+                    {statusMsg.text && (
+                        <div className={`fixed top-6 left-1/2 -translate-x-1/2 z-[100] px-6 py-3 rounded-2xl shadow-xl text-white font-bold animate-bounce-short ${statusMsg.type === 'error' ? 'bg-red-500' : 'bg-slate-800'}`}>
+                            {statusMsg.text}
+                        </div>
+                    )}
+
+                    {/* 사이드바 */}
+                    <aside className={`bg-white border-r flex flex-col transition-all duration-300 shrink-0 ${isSidebarOpen ? 'w-72' : 'w-16'}`}>
+                        <div className="p-4 h-16 border-b flex items-center justify-between">
+                            {isSidebarOpen && <span className="font-black text-blue-600 truncate uppercase tracking-tighter">Event List</span>}
+                            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-1.5 hover:bg-slate-100 rounded-lg ml-auto">
+                                <Icon name={isSidebarOpen ? 'chevron-left' : 'chevron-right'} />
+                            </button>
+                        </div>
+                        
+                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                            {events.map((event) => (
+                                <div key={event.id} onClick={() => { setActiveEventId(event.id); setSearchResult(null); }}
+                                    className={`p-3 rounded-xl cursor-pointer flex items-center gap-3 group transition-all ${activeEventId === event.id ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-100 shadow-sm' : 'hover:bg-slate-50 text-slate-500'}`}>
+                                    <Icon name="calendar" size={18} className={activeEventId === event.id ? 'text-blue-500' : 'text-slate-300'} />
+                                    {isSidebarOpen && (
+                                        <>
+                                            <div className="flex-1 truncate">
+                                                <p className="font-bold text-sm truncate">{event.name}</p>
+                                                <p className="text-[10px] opacity-60">{event.date}</p>
+                                            </div>
+                                            <button onClick={(e) => deleteEvent(event.id, e)} className="p-1 hover:bg-red-50 text-red-400 opacity-0 group-hover:opacity-100 transition-opacity rounded">
+                                                <Icon name="trash-2" size={14} />
+                                            </button>
+                                        </>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="p-4 border-t">
+                            <button onClick={addEvent} className="w-full bg-slate-900 text-white p-3 rounded-xl flex items-center justify-center gap-2 hover:bg-slate-800 transition-all shadow-lg active:scale-95">
+                                <Icon name="plus" size={18} />
+                                {isSidebarOpen && <span className="font-bold text-sm">행사 추가</span>}
+                            </button>
+                        </div>
+                    </aside>
+
+                    {/* 메인 화면 */}
+                    <main className="flex-1 overflow-y-auto p-6 md:p-12">
+                        <div className="max-w-4xl mx-auto">
+                            {currentEvent ? (
+                                <>
+                                    {/* 행사 헤더 */}
+                                    <div className="mb-10 flex flex-col md:flex-row justify-between items-start gap-6 border-b pb-10">
+                                        <div className="flex-1">
+                                            {editingId === currentEvent.id ? (
+                                                <div className="space-y-3 bg-white p-6 rounded-3xl border-2 border-blue-100 shadow-xl">
+                                                    <input className="w-full text-2xl font-black p-2 border-b outline-none focus:border-blue-500" value={tempInfo.name} onChange={e => setTempInfo({...tempInfo, name: e.target.value})} />
+                                                    <input type="date" className="p-2 border rounded-lg text-sm" value={tempInfo.date} onChange={e => setTempInfo({...tempInfo, date: e.target.value})} />
+                                                    <textarea className="w-full p-3 border rounded-xl text-sm h-24 resize-none" value={tempInfo.desc} onChange={e => setTempInfo({...tempInfo, desc: e.target.value})} placeholder="상세 공지 내용을 입력하세요" />
+                                                    <div className="flex justify-end gap-2">
+                                                        <button onClick={() => setEditingId(null)} className="px-4 py-2 text-slate-400 text-sm font-bold">취소</button>
+                                                        <button onClick={saveEdit} className="px-6 py-2 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-lg">저장</button>
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="space-y-1">
+                                                    <div className="flex items-center gap-3">
+                                                        <h1 className="text-4xl font-black text-slate-900">{currentEvent.name}</h1>
+                                                        <button onClick={() => startEdit(currentEvent)} className="p-2 text-slate-300 hover:text-blue-500 transition-colors"><Icon name="edit-3" size={20}/></button>
+                                                    </div>
+                                                    <p className="text-blue-600 font-black text-lg">{currentEvent.date}</p>
+                                                    <p className="text-slate-500 mt-4 leading-relaxed whitespace-pre-wrap">{currentEvent.description}</p>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        {/* 업로드 박스 */}
+                                        <div className="bg-white p-6 rounded-3xl shadow-xl shadow-slate-200/50 border flex flex-col items-center gap-4 shrink-0 min-w-[200px]">
+                                            <div className={`p-4 rounded-2xl ${currentEvent.data?.length > 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
+                                                <Icon name={currentEvent.data?.length > 0 ? 'file-check' : 'file-spreadsheet'} size={40} />
+                                            </div>
+                                            <div className="text-center">
+                                                <label className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-bold cursor-pointer inline-flex items-center gap-2 hover:bg-blue-700 transition-all shadow-lg active:scale-95">
+                                                    <Icon name="upload" size={16} /> 명단 업로드
+                                                    <input type="file" className="hidden" accept=".xlsx,.xls,.csv" onChange={handleFileUpload} />
+                                                </label>
+                                                {currentEvent.data?.length > 0 && (
+                                                    <p className="text-[11px] text-emerald-600 mt-2 font-black">✓ {currentEvent.data.length}명 로드됨</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* 검색 섹션 */}
+                                    <div className="bg-white rounded-[40px] shadow-2xl shadow-slate-200/60 p-10 mb-10 border border-slate-100 grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
+                                        <div className="space-y-2">
+                                            <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Class</label>
+                                            <select className="w-full bg-slate-50 p-4 rounded-2xl border-0 ring-1 ring-slate-200 font-bold focus:ring-4 focus:ring-blue-100 transition-all cursor-pointer" value={searchParams.class} onChange={e => setSearchParams({...searchParams, class: e.target.value})}>
+                                                {classes.map(c => <option key={c} value={c}>{c}반</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Number</label>
+                                            <select className="w-full bg-slate-50 p-4 rounded-2xl border-0 ring-1 ring-slate-200 font-bold focus:ring-4 focus:ring-blue-100 transition-all cursor-pointer" value={searchParams.number} onChange={e => setSearchParams({...searchParams, number: e.target.value})}>
+                                                {numbers.map(n => <option key={n} value={n}>{n}번</option>)}
+                                            </select>
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">Name</label>
+                                            <input className="w-full bg-slate-50 p-4 rounded-2xl border-0 ring-1 ring-slate-200 font-bold focus:ring-4 focus:ring-blue-100 outline-none" placeholder="실명을 입력하세요" value={searchParams.name} onChange={e => setSearchParams({...searchParams, name: e.target.value})} onKeyDown={e => e.key === 'Enter' && handleSearch()} />
+                                        </div>
+                                        <button onClick={handleSearch} disabled={isSearching} className="bg-blue-600 h-[60px] text-white rounded-2xl font-black shadow-2xl shadow-blue-200 hover:bg-blue-700 hover:-translate-y-1 transition-all flex items-center justify-center gap-2">
+                                            {isSearching ? <div className="w-6 h-6 border-4 border-white/30 border-t-white rounded-full animate-spin"></div> : <><Icon name="search" size={20}/> 조회하기</>}
+                                        </button>
+                                    </div>
+
+                                    {/* 검색 결과 */}
+                                    {searchResult && (
+                                        <div className={`p-10 rounded-[48px] border-2 shadow-2xl animate-in fade-in slide-in-from-bottom-8 duration-700 ${searchResult.error ? 'bg-red-50 border-red-100 shadow-red-100/30' : 'bg-emerald-50 border-emerald-100 shadow-emerald-100/30'}`}>
+                                            {searchResult.error ? (
+                                                <div className="text-center py-6">
+                                                    <Icon name="alert-circle" size={56} className="mx-auto mb-4 text-red-400"/>
+                                                    <h3 className="text-2xl font-black text-red-900 mb-2">신청 정보를 찾을 수 없습니다</h3>
+                                                    <p className="text-red-700/60 font-bold">{searchResult.error}</p>
+                                                </div>
+                                            ) : (
+                                                <div className="flex flex-col md:flex-row gap-12 items-start">
+                                                    <div className="bg-emerald-600 text-white p-10 rounded-[32px] shadow-2xl shadow-emerald-200 animate-bounce-short shrink-0">
+                                                        <Icon name="check-circle-2" size={64} strokeWidth={3}/>
+                                                    </div>
+                                                    <div className="flex-1 w-full">
+                                                        <div className="text-center md:text-left mb-8">
+                                                            <p className="text-emerald-700 font-black uppercase tracking-widest text-[10px] mb-2">Status: Approved</p>
+                                                            <h2 className="text-4xl font-black text-slate-900 leading-tight">
+                                                                {searchParams.class}반 {searchParams.number}번 <span className="text-emerald-600">{searchParams.name}</span> 학생
+                                                            </h2>
+                                                        </div>
+                                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                                                            {Object.entries(searchResult).map(([k,v]) => {
+                                                                if (['반','번호','이름','Grade','Class','Number','Name'].includes(k)) return null;
+                                                                return (
+                                                                    <div key={k} className="bg-white p-6 rounded-3xl shadow-sm border border-emerald-100 hover:shadow-xl transition-all">
+                                                                        <p className="text-[10px] font-black text-emerald-500 uppercase mb-2 tracking-widest">{k}</p>
+                                                                        <p className="text-xl font-black text-slate-800 break-words">{String(v)}</p>
+                                                                    </div>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </>
+                            ) : (
+                                <div className="h-full flex flex-col items-center justify-center py-20 text-center space-y-4">
+                                    <Icon name="calendar" size={80} className="text-slate-200" />
+                                    <div className="space-y-1">
+                                        <h2 className="text-2xl font-black text-slate-400">선택된 행사가 없습니다</h2>
+                                        <p className="text-slate-300 font-bold">좌측 목록에서 행사를 선택하거나 새로운 행사를 추가하세요.</p>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
