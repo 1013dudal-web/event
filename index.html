@@ -1,30 +1,309 @@
 <!DOCTYPE html>
-<html>
+<html lang="ko">
 <head>
-    <title>My Event Site</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>학교 행사 신청 확인 시스템</title>
+    <!-- 라이브러리 로드: React, Babel, Tailwind, XLSX, Lucide -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        body {
-            font-family: Arial;
-            text-align: center;
-            background-color: #f5f5f5;
-        }
-        h1 {
-            color: blue;
-        }
-        .box {
-            background: white;
-            padding: 20px;
-            margin: 50px auto;
-            width: 300px;
-            border-radius: 10px;
-        }
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@100;300;400;500;700;900&display=swap');
+        body { font-family: 'Noto Sans KR', sans-serif; margin: 0; padding: 0; }
+        .cursor-col-resize { cursor: col-resize; }
+        .lucide { display: inline-block; vertical-align: middle; }
     </style>
 </head>
-
 <body>
-    <div class="box">
-        <h1>Event Page</h1>
-        <p>학교 행사 안내 페이지입니다.</p>
-    </div>
+    <div id="root"></div>
+
+    <script type="text/babel" data-type="module">
+        // Firebase SDK 모듈 가져오기
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        /**
+         * [필독!] Firebase 설정 방법
+         * 본인의 Firebase 콘솔에서 발급받은 firebaseConfig 내용을 아래에 붙여넣으세요.
+         */
+        const firebaseConfig = {
+            apiKey: "본인의_API_KEY",
+            authDomain: "본인의_PROJECT_ID.firebaseapp.com",
+            projectId: "본인의_PROJECT_ID",
+            storageBucket: "본인의_PROJECT_ID.appspot.com",
+            messagingSenderId: "본인의_SENDER_ID",
+            appId: "본인의_APP_ID"
+        };
+        
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = 'school-event-check-system'; 
+
+        // Lucide 아이콘 컴포넌트 (DOM 충돌 방지 버전)
+        const Icon = ({ name, size = 20, className = "" }) => {
+            const containerRef = React.useRef(null);
+            React.useEffect(() => {
+                if (window.lucide && containerRef.current) {
+                    containerRef.current.innerHTML = `<i data-lucide="${name}" class="${className}" style="width: ${size}px; height: ${size}px;"></i>`;
+                    window.lucide.createIcons({ root: containerRef.current });
+                }
+            }, [name, size, className]);
+            return <span ref={containerRef} className="inline-flex items-center justify-center shrink-0" style={{ width: size, height: size }}></span>;
+        };
+
+        const App = () => {
+            const [user, setUser] = React.useState(null);
+            const [events, setEvents] = React.useState([]);
+            const [activeEventId, setActiveEventId] = React.useState(null);
+            const [isSidebarOpen, setIsSidebarOpen] = React.useState(true);
+            const [sidebarWidth, setSidebarWidth] = React.useState(280); 
+            const [isResizing, setIsResizing] = React.useState(false);
+            const [isLoading, setIsLoading] = React.useState(true);
+            const [statusMsg, setStatusMsg] = React.useState({ text: '', type: '' });
+            
+            const [editingId, setEditingId] = React.useState(null);
+            const [isMainEditing, setIsMainEditing] = React.useState(false);
+            const [tempName, setTempName] = React.useState('');
+            const [tempDate, setTempDate] = React.useState('');
+            const [tempDescription, setTempDescription] = React.useState('');
+            const [searchParams, setSearchParams] = React.useState({ class: '1', number: '1', name: '' });
+            const [searchResult, setSearchResult] = React.useState(null);
+            const [isSearching, setIsSearching] = React.useState(false);
+
+            const classes = Array.from({ length: 12 }, (_, i) => i + 1);
+            const numbers = Array.from({ length: 35 }, (_, i) => i + 1);
+            const currentEvent = events.find(e => e.id === activeEventId) || events[0] || null;
+
+            React.useEffect(() => {
+                signInAnonymously(auth).catch(e => console.error("Firebase Config를 확인해주세요."));
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                    if (!u) setIsLoading(false);
+                });
+                return () => unsubscribe();
+            }, []);
+
+            React.useEffect(() => {
+                if (!user) return;
+                const eventsRef = collection(db, 'school_events', appId, 'data');
+                const unsubscribe = onSnapshot(eventsRef, (snapshot) => {
+                    const fetchedEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                    if (fetchedEvents.length === 0) {
+                        seedInitialData();
+                    } else {
+                        const sortedEvents = fetchedEvents.sort((a, b) => (a.order || 0) - (b.order || 0));
+                        setEvents(sortedEvents);
+                        if (!activeEventId && sortedEvents.length > 0) setActiveEventId(sortedEvents[0].id);
+                        setIsLoading(false);
+                    }
+                }, (error) => {
+                    setIsLoading(false);
+                });
+                return () => unsubscribe();
+            }, [user, activeEventId]);
+
+            const seedInitialData = async () => {
+                const batch = writeBatch(db);
+                const initialEvents = [
+                    { id: '1', name: '꿈 틔움 진로체험활동', date: '2024-04-15', description: '신청 현황 확인 페이지입니다.', order: 1, data: [] },
+                    { id: '2', name: '체육대회', date: '2024-05-20', description: '체육대회 종목을 확인하세요.', order: 2, data: [] }
+                ];
+                initialEvents.forEach(evt => {
+                    const docRef = doc(db, 'school_events', appId, 'data', evt.id);
+                    batch.set(docRef, evt);
+                });
+                await batch.commit();
+            };
+
+            const resize = (e) => {
+                if (isResizing) {
+                    const newWidth = e.clientX;
+                    if (newWidth > 200 && newWidth < 600) setSidebarWidth(newWidth);
+                }
+            };
+
+            React.useEffect(() => {
+                if (isResizing) {
+                    window.addEventListener('mousemove', resize);
+                    window.addEventListener('mouseup', () => setIsResizing(false));
+                }
+                return () => {
+                    window.removeEventListener('mousemove', resize);
+                    window.removeEventListener('mouseup', () => setIsResizing(false));
+                };
+            }, [isResizing]);
+
+            const addEvent = async () => {
+                const newId = Date.now().toString();
+                const today = new Date().toISOString().split('T')[0];
+                const maxOrder = events.length > 0 ? Math.max(...events.map(e => e.order || 0)) : 0;
+                const newEvent = { id: newId, name: `새 행사 ${events.length + 1}`, date: today, description: '', order: maxOrder + 1, data: [] };
+                await setDoc(doc(db, 'school_events', appId, 'data', newId), newEvent);
+                setActiveEventId(newId);
+                startEditing(newEvent, true);
+            };
+
+            const deleteEvent = async (id, e) => {
+                e.stopPropagation();
+                if(confirm("정말 삭제하시겠습니까?")) {
+                    await deleteDoc(doc(db, 'school_events', appId, 'data', id));
+                }
+            };
+
+            const startEditing = (event, fromMain = false) => {
+                if (!event) return;
+                setEditingId(event.id);
+                setTempName(event.name || '');
+                setTempDate(event.date || '');
+                setTempDescription(event.description || '');
+                setIsMainEditing(fromMain);
+            };
+
+            const saveEventDetails = async () => {
+                if (tempName.trim()) {
+                    await setDoc(doc(db, 'school_events', appId, 'data', editingId), {
+                        name: tempName.trim(), date: tempDate, description: tempDescription.trim()
+                    }, { merge: true });
+                    setStatusMsg({ text: '저장 완료', type: 'success' });
+                }
+                setEditingId(null);
+                setIsMainEditing(false);
+            };
+
+            const handleFileUpload = async (e) => {
+                const file = e.target.files[0];
+                if (!file || !currentEvent) return;
+                const reader = new FileReader();
+                reader.onload = async (evt) => {
+                    const workbook = XLSX.read(evt.target.result, { type: 'binary' });
+                    const data = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+                    await setDoc(doc(db, 'school_events', appId, 'data', activeEventId), { data }, { merge: true });
+                    setStatusMsg({ text: '데이터 업로드 성공', type: 'success' });
+                };
+                reader.readAsBinaryString(file);
+            };
+
+            const handleSearch = () => {
+                if (!searchParams.name.trim()) return;
+                setIsSearching(true);
+                setSearchResult(null);
+                setTimeout(() => {
+                    if (!currentEvent?.data || currentEvent.data.length === 0) {
+                        setSearchResult({ error: "데이터가 없습니다. 관리자 메뉴에서 엑셀을 업로드해주세요." });
+                    } else {
+                        const found = currentEvent.data.find(row => 
+                            String(row['반'] || row['Class'] || '').trim() === String(searchParams.class) && 
+                            String(row['번호'] || row['Number'] || '').trim() === String(searchParams.number) && 
+                            String(row['이름'] || row['Name'] || '').trim().replace(/\s/g, "") === searchParams.name.trim().replace(/\s/g, "")
+                        );
+                        setSearchResult(found || { error: "신청 내역이 없습니다. 정보를 확인해주세요." });
+                    }
+                    setIsSearching(false);
+                }, 800);
+            };
+
+            if (isLoading) return <div className="h-screen flex items-center justify-center">연결 중...</div>;
+
+            return (
+                <div className={`flex h-screen bg-slate-50 ${isResizing ? 'cursor-col-resize' : ''}`}>
+                    {statusMsg.text && (
+                        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-slate-800 text-white px-6 py-3 rounded-xl shadow-lg">
+                            {statusMsg.text}
+                        </div>
+                    )}
+                    <aside style={{ width: isSidebarOpen ? sidebarWidth : 64 }} className="bg-white border-r flex flex-col transition-all overflow-hidden shrink-0">
+                        <div className="p-4 border-b flex items-center justify-between">
+                            {isSidebarOpen && <span className="font-bold text-blue-600">행사 목록</span>}
+                            <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-1 hover:bg-slate-100 rounded">
+                                <Icon name={isSidebarOpen ? 'chevron-left' : 'chevron-right'} />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                            {events.map((event) => (
+                                <div key={event.id} onClick={() => { setActiveEventId(event.id); setSearchResult(null); }}
+                                    className={`p-3 rounded-lg cursor-pointer flex items-center gap-2 group ${activeEventId === event.id ? 'bg-blue-50 text-blue-600' : 'hover:bg-slate-50 text-slate-500'}`}>
+                                    {isSidebarOpen && <div className="flex-1 truncate font-bold text-sm">{event.name}</div>}
+                                    {isSidebarOpen && <button onClick={(e) => deleteEvent(event.id, e)} className="p-1 text-red-400 opacity-0 group-hover:opacity-100"><Icon name="trash-2" size={14} /></button>}
+                                </div>
+                            ))}
+                        </div>
+                        <div className="p-4 border-t">
+                            <button onClick={addEvent} className="w-full bg-slate-900 text-white p-2 rounded-lg flex items-center justify-center gap-2">
+                                <Icon name="plus" /> {isSidebarOpen && "행사 추가"}
+                            </button>
+                        </div>
+                        {isSidebarOpen && <div onMouseDown={(e) => { e.preventDefault(); setIsResizing(true); }} className="absolute right-0 top-0 w-1 h-full cursor-col-resize hover:bg-blue-400" />}
+                    </aside>
+
+                    <main className="flex-1 overflow-y-auto p-8">
+                        <div className="max-w-4xl mx-auto">
+                            {currentEvent ? (
+                                <div className="mb-10 flex flex-col md:flex-row justify-between items-start gap-6">
+                                    <div className="flex-1">
+                                        <h1 className="text-3xl font-black text-slate-900 flex items-center gap-2">
+                                            {currentEvent.name}
+                                            <button onClick={() => startEditing(currentEvent, true)} className="text-slate-300 hover:text-blue-500"><Icon name="edit-2" size={18} /></button>
+                                        </h1>
+                                        <p className="text-blue-500 font-bold">{currentEvent.date}</p>
+                                        <p className="text-slate-500 mt-2 text-sm">{currentEvent.description || "안내 사항이 없습니다."}</p>
+                                    </div>
+                                    <div className="bg-white p-4 rounded-2xl shadow-sm border text-center">
+                                        <label className="bg-blue-600 text-white px-4 py-2 rounded-lg font-bold cursor-pointer inline-flex items-center gap-2">
+                                            <Icon name="upload" size={14} /> 엑셀 업로드
+                                            <input type="file" className="hidden" onChange={handleFileUpload} />
+                                        </label>
+                                        {currentEvent.data?.length > 0 && <p className="text-[10px] text-emerald-600 mt-2 font-bold">{currentEvent.data.length}명 로드됨</p>}
+                                    </div>
+                                </div>
+                            ) : null}
+
+                            {(editingId === currentEvent?.id && isMainEditing) && (
+                                <div className="mb-8 p-6 bg-white rounded-2xl border shadow-xl space-y-4">
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <input className="border p-2 rounded-lg" value={tempName} onChange={e => setTempName(e.target.value)} placeholder="이름" />
+                                        <input type="date" className="border p-2 rounded-lg" value={tempDate} onChange={e => setTempDate(e.target.value)} />
+                                    </div>
+                                    <textarea className="w-full border p-2 rounded-lg h-24" value={tempDescription} onChange={e => setTempDescription(e.target.value)} placeholder="안내" />
+                                    <div className="flex justify-end gap-2"><button onClick={() => setIsMainEditing(false)} className="text-slate-400">취소</button><button onClick={saveEventDetails} className="bg-blue-600 text-white px-4 py-1 rounded-lg">저장</button></div>
+                                </div>
+                            )}
+
+                            <div className="bg-white rounded-3xl shadow-xl p-8 mb-8 grid grid-cols-1 md:grid-cols-4 gap-6 items-end">
+                                <div><label className="text-xs font-bold text-slate-400">반</label><select className="w-full bg-slate-50 p-3 rounded-xl border-0 ring-1 ring-slate-100" value={searchParams.class} onChange={e => setSearchParams({...searchParams, class: e.target.value})}>{classes.map(c => <option key={c} value={c}>{c}반</option>)}</select></div>
+                                <div><label className="text-xs font-bold text-slate-400">번호</label><select className="w-full bg-slate-50 p-3 rounded-xl border-0 ring-1 ring-slate-100" value={searchParams.number} onChange={e => setSearchParams({...searchParams, number: e.target.value})}>{numbers.map(n => <option key={n} value={n}>{n}번</option>)}</select></div>
+                                <div><label className="text-xs font-bold text-slate-400">이름</label><input className="w-full bg-slate-50 p-3 rounded-xl border-0 ring-1 ring-slate-100" placeholder="실명" value={searchParams.name} onChange={e => setSearchParams({...searchParams, name: e.target.value})} onKeyDown={e => e.key === 'Enter' && handleSearch()} /></div>
+                                <button onClick={handleSearch} disabled={isSearching} className="w-full bg-blue-600 h-[52px] text-white rounded-xl font-bold">{isSearching ? "조회 중..." : "조회하기"}</button>
+                            </div>
+
+                            {searchResult && (
+                                <div className={`p-8 rounded-3xl border-2 ${searchResult.error ? 'bg-red-50 border-red-100' : 'bg-emerald-50 border-emerald-100'}`}>
+                                    {searchResult.error ? <p className="text-center text-red-700 font-bold">{searchResult.error}</p> : (
+                                        <div className="flex flex-col md:flex-row gap-8">
+                                            <div className="bg-emerald-600 text-white p-6 rounded-2xl shrink-0"><Icon name="check-circle-2" size={48}/></div>
+                                            <div className="flex-1">
+                                                <h2 className="text-2xl font-black mb-4">{searchParams.class}반 {searchParams.number}번 {searchParams.name} 학생</h2>
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                    {Object.entries(searchResult).map(([k,v]) => !['반','번호','이름'].includes(k) && <div key={k} className="bg-white p-4 rounded-xl shadow-sm border border-emerald-100"><p className="text-[10px] font-bold text-emerald-500 uppercase">{k}</p><p className="text-lg font-bold">{String(v)}</p></div>)}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
 </body>
 </html>
